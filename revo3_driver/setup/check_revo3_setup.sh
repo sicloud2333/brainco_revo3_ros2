@@ -35,6 +35,38 @@ rule_has_link() {
   [[ -f "${RULE_FILE}" ]] && grep -Fq "SYMLINK+=\"${link_name}\"" "${RULE_FILE}"
 }
 
+yaml_port_value() {
+  local cfg="$1"
+  awk -F: '
+    $1 ~ /^[[:space:]]*port[[:space:]]*$/ {
+      value = $2
+      sub(/#.*/, "", value)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", value)
+      print value
+      exit
+    }
+  ' "${cfg}"
+}
+
+check_config_port() {
+  local cfg="$1"
+  local label="$2"
+  local expected="$3"
+
+  if [[ ! -f "${cfg}" ]]; then
+    info "${label} not found"
+    return
+  fi
+
+  local current
+  current="$(yaml_port_value "${cfg}")"
+  if [[ "${current}" == "${expected}" ]]; then
+    pass "${label} uses ${expected}"
+  else
+    fail "${label} port=${current:-<empty>} (expected ${expected})"
+  fi
+}
+
 check_config_ports() {
   local pkg_root cfg_left cfg_right
   pkg_root="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -42,52 +74,74 @@ check_config_ports() {
   cfg_left="${pkg_root}/config/protocol_modbus_left.yaml"
   cfg_right="${pkg_root}/config/protocol_modbus_right.yaml"
 
-  if [[ -f "${cfg_left}" ]]; then
-    if grep -q "port: /dev/revo3_hand_left" "${cfg_left}" 2>/dev/null; then
-      pass "protocol_modbus_left.yaml uses /dev/revo3_hand_left"
-    else
-      local current
-      current="$(grep -oP 'port:\s*\K.*' "${cfg_left}" 2>/dev/null || echo "?")"
-      fail "protocol_modbus_left.yaml port=${current} (expected /dev/revo3_hand_left)"
-    fi
-  else
-    info "protocol_modbus_left.yaml not found"
+  if [[ "${EXPECT_LEFT}" -eq 1 ]]; then
+    check_config_port "${cfg_left}" "protocol_modbus_left.yaml" "/dev/revo3_hand_left"
   fi
+  if [[ "${EXPECT_RIGHT}" -eq 1 ]]; then
+    check_config_port "${cfg_right}" "protocol_modbus_right.yaml" "/dev/revo3_hand_right"
+  fi
+}
 
-  if [[ -f "${cfg_right}" ]]; then
-    if grep -q "port: /dev/revo3_hand_right" "${cfg_right}" 2>/dev/null; then
-      pass "protocol_modbus_right.yaml uses /dev/revo3_hand_right"
-    else
-      local current
-      current="$(grep -oP 'port:\s*\K.*' "${cfg_right}" 2>/dev/null || echo "?")"
-      fail "protocol_modbus_right.yaml port=${current} (expected /dev/revo3_hand_right)"
-    fi
-  else
-    info "protocol_modbus_right.yaml not found"
-  fi
+select_expected_hands() {
+  EXPECT_LEFT=0
+  EXPECT_RIGHT=0
+
+  case "${1:-auto}" in
+    left|l)
+      EXPECT_LEFT=1
+      ;;
+    right|r)
+      EXPECT_RIGHT=1
+      ;;
+    both|bimanual)
+      EXPECT_LEFT=1
+      EXPECT_RIGHT=1
+      ;;
+    auto)
+      if rule_has_link "revo3_hand_left"; then
+        EXPECT_LEFT=1
+      fi
+      if rule_has_link "revo3_hand_right"; then
+        EXPECT_RIGHT=1
+      fi
+      if [[ "${EXPECT_LEFT}" -eq 0 && "${EXPECT_RIGHT}" -eq 0 ]]; then
+        EXPECT_LEFT=1
+        EXPECT_RIGHT=1
+      fi
+      ;;
+    *)
+      echo "Usage: $0 [auto|left|right|both]" >&2
+      exit 2
+      ;;
+  esac
 }
 
 main() {
   FAILED=0
+  select_expected_hands "${1:-auto}"
   echo "=== Revo3 serial setup check ==="
   check_rule_file
 
-  if rule_has_link "revo3_hand_left"; then
+  if [[ "${EXPECT_LEFT}" -eq 1 ]] && rule_has_link "revo3_hand_left"; then
     pass "udev maps revo3_hand_left"
-  elif [[ -f "${RULE_FILE}" ]]; then
+  elif [[ "${EXPECT_LEFT}" -eq 1 && -f "${RULE_FILE}" ]]; then
     fail "udev rule has no SYMLINK+=\"revo3_hand_left\""
   fi
 
-  if rule_has_link "revo3_hand_right"; then
+  if [[ "${EXPECT_RIGHT}" -eq 1 ]] && rule_has_link "revo3_hand_right"; then
     pass "udev maps revo3_hand_right"
-  elif [[ -f "${RULE_FILE}" ]]; then
+  elif [[ "${EXPECT_RIGHT}" -eq 1 && -f "${RULE_FILE}" ]]; then
     fail "udev rule has no SYMLINK+=\"revo3_hand_right\""
   fi
 
-  check_link "${LEFT_LINK}"
-  check_link "${RIGHT_LINK}"
+  if [[ "${EXPECT_LEFT}" -eq 1 ]]; then
+    check_link "${LEFT_LINK}"
+  fi
+  if [[ "${EXPECT_RIGHT}" -eq 1 ]]; then
+    check_link "${RIGHT_LINK}"
+  fi
 
-  if [[ -e "${LEFT_LINK}" && -e "${RIGHT_LINK}" ]]; then
+  if [[ "${EXPECT_LEFT}" -eq 1 && "${EXPECT_RIGHT}" -eq 1 && -e "${LEFT_LINK}" && -e "${RIGHT_LINK}" ]]; then
     local left_real right_real
     left_real="$(readlink -f "${LEFT_LINK}" || true)"
     right_real="$(readlink -f "${RIGHT_LINK}" || true)"

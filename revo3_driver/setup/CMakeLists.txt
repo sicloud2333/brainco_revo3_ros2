@@ -24,12 +24,6 @@ if(NOT EXISTS "${BRAINCO_REVO3_SDK_LIB_PATH}")
     "libbc_revo3_sdk.so not found. From revo3_driver run: bash scripts/download_sdk.sh")
 endif()
 
-add_library(bc_revo3_sdk SHARED IMPORTED GLOBAL)
-set_target_properties(bc_revo3_sdk PROPERTIES
-  IMPORTED_LOCATION "${BRAINCO_REVO3_SDK_LIB_PATH}"
-  INTERFACE_INCLUDE_DIRECTORIES "${BRAINCO_REVO3_SDK_INCLUDE_DIR}"
-)
-
 add_executable(detect_revo3_ports src/detect_revo3_ports.cpp)
 target_include_directories(detect_revo3_ports PRIVATE "${BRAINCO_REVO3_SDK_INCLUDE_DIR}")
 target_link_directories(detect_revo3_ports PRIVATE "${BRAINCO_REVO3_SDK_LIB_DIR}")

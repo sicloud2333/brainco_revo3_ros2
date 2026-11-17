@@ -2,7 +2,7 @@
 hardware:
   slave_id: 126           # Left hand slave ID
   log_level: info
-  port: /dev/ttyUSB0      # Ignored when auto_detect=true
+  port: /dev/revo3_hand_left
   baudrate: 5000000
   auto_detect: true        # Scan serial ports and require slave_id=126
   auto_detect_quick: true

@@ -3,7 +3,7 @@
 hardware:
   slave_id: 127         # Right hand slave ID
   log_level: info       # error | warn | info | debug | trace
-  port: /dev/ttyUSB0    # Ignored when auto_detect=true
+  port: /dev/revo3_hand_right
   baudrate: 5000000     # 5 Mbps – Revo3 default
   auto_detect: true     # Scan serial ports and require slave_id=127
   auto_detect_quick: true

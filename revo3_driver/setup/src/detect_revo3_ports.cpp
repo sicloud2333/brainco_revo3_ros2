@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <filesystem>
+#include <memory>
 #include <regex>
 #include <string>
 #include <unordered_map>
@@ -19,13 +20,11 @@ constexpr uint8_t kLeftSlaveId = 126;
 constexpr uint8_t kRightSlaveId = 127;
 
 // ── scan_serial_ports ──────────────────────────────────────────────────────────
-// Discover all hardware serial ports by scanning /dev/ for character devices
-// whose name matches tty[A-Z]* (ttyUSB*, ttyACM*, ttyCH343USB*, ttyS*, etc.).
-// Excludes virtual consoles (tty0-tty63) and pseudo-terminals (pty*).
+// Discover USB serial ports used by Revo3 RS485 adapters.
 std::vector<std::string> scan_serial_ports()
 {
   std::vector<std::string> ports;
-  const std::regex serial_re(R"(^ttyCH343)");  // Revo3 uses CH343 USB-serial chips; skip other tty devices to avoid blocking
+  const std::regex serial_re(R"(^tty(USB|ACM|CH))");
   std::error_code ec;
 
   for (const auto & entry : std::filesystem::directory_iterator("/dev", ec)) {
@@ -44,32 +43,38 @@ std::vector<std::string> scan_serial_ports()
 
 bool probe_port(const std::string & port, uint8_t & slave_id_out)
 {
-  // Revo3 uses auto_detect_modbus_revo3 (Stark SDK V3 protocol).
-  // Note: revo3 auto-detect does not support a 'quick' flag
-  // (passes only port — matches modbus_session.cpp).
-  CDeviceConfig * cfg = auto_detect_modbus_revo3(port.c_str());
-  if (!cfg || !cfg->port_name) {
-    if (cfg) {
-      free_device_config(cfg);
+  struct DetectedDeviceListDeleter
+  {
+    void operator()(CDetectedDeviceList * list) const
+    {
+      if (list) {
+        free_detected_device_list(list);
+      }
     }
+  };
+  using DetectedDeviceListPtr = std::unique_ptr<CDetectedDeviceList, DetectedDeviceListDeleter>;
+
+  DetectedDeviceListPtr list{stark_auto_detect(true, port.c_str(), STARK_PROTOCOL_TYPE_MODBUS)};
+  if (!list || list->count == 0 || !list->devices) {
     return false;
   }
 
-  const std::string detected_port = cfg->port_name;
-  slave_id_out = cfg->slave_id;
-  const uint32_t baud = cfg->baudrate;
-  free_device_config(cfg);
+  for (std::uintptr_t i = 0; i < list->count; ++i) {
+    const CDetectedDevice & device = list->devices[i];
+    if (device.protocol != STARK_PROTOCOL_TYPE_MODBUS || !device.port_name) {
+      continue;
+    }
 
-  if (detected_port != port) {
-    return false;
+    const std::string detected_port = device.port_name;
+    if (detected_port != port) {
+      continue;
+    }
+
+    slave_id_out = device.slave_id;
+    return true;
   }
 
-  DeviceHandler * handle = modbus_open(port.c_str(), baud);
-  if (!handle) {
-    return false;
-  }
-  modbus_close(handle);
-  return true;
+  return false;
 }
 
 }  // namespace
@@ -77,13 +82,12 @@ bool probe_port(const std::string & port, uint8_t & slave_id_out)
 int main()
 {
   init_logging(LOG_LEVEL_ERROR);
-  stark_set_v3_protocol(true);  // Revo3 uses V3 New protocol
 
   std::unordered_map<uint8_t, std::string> by_slave;
   const auto ports = scan_serial_ports();
 
   if (ports.empty()) {
-    std::fprintf(stderr, "[ERROR] no serial ports found in /dev/ (ttyUSB*, ttyACM*, ttyCH343USB*, etc.)\n");
+    std::fprintf(stderr, "[ERROR] no USB serial ports found in /dev/ (ttyUSB*, ttyACM*, ttyCH*)\n");
     return 1;
   }
 
@@ -117,15 +121,23 @@ int main()
     std::printf("REVO3_RIGHT_SLAVE=%u\n", kRightSlaveId);
   }
 
-  if (left_it == by_slave.end() || right_it == by_slave.end()) {
+  if (left_it == by_slave.end() && right_it == by_slave.end()) {
     std::fprintf(
       stderr,
-      "[ERROR] need both slave_id %u (left) and %u (right). Found %zu device(s).\n",
+      "[ERROR] need at least one Revo3 hand: slave_id %u (left) or %u (right). Found %zu device(s).\n",
       kLeftSlaveId, kRightSlaveId, by_slave.size());
     for (const auto & entry : by_slave) {
       std::fprintf(stderr, "        slave_id=%u port=%s\n", entry.first, entry.second.c_str());
     }
     return 1;
+  }
+
+  if (left_it == by_slave.end() || right_it == by_slave.end()) {
+    std::fprintf(
+      stderr,
+      "[WARN] detected only one Revo3 hand. Missing slave_id %u (%s).\n",
+      left_it == by_slave.end() ? kLeftSlaveId : kRightSlaveId,
+      left_it == by_slave.end() ? "left" : "right");
   }
 
   return 0;

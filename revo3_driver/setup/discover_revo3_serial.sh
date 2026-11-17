@@ -1,16 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# List Revo3 Modbus serial candidates (ttyACM / ttyUSB) with USB topology hints.
+# List Revo3 Modbus USB serial candidates with USB topology hints.
 
 ROLES_FILE="${REVO3_USB_ROLES_FILE:-${XDG_CONFIG_HOME:-$HOME/.config}/revoarm/revo3_usb_roles.conf}"
 
 list_serial_devs() {
   local d
   shopt -s nullglob
-  # Scan all hardware serial devices: ttyUSB*, ttyACM*, ttyCH343USB*, ttyCH34*, ttyS*, etc.
-  # Excludes virtual consoles (tty0-tty63) by requiring at least one uppercase letter after "tty".
-  for d in /dev/tty[A-Z]*; do
+  # Scan USB serial devices. Built-in motherboard ttyS* ports are not Revo3 adapters.
+  for d in /dev/ttyUSB* /dev/ttyACM* /dev/ttyCH*; do
     [[ -c "$d" ]] && echo "$d"
   done
   shopt -u nullglob

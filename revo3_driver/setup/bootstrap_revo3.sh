@@ -4,7 +4,7 @@ set -euo pipefail
 # One-time Revo3 serial bootstrap: discover -> udev -> permissions -> check
 #
 # Usage:
-#   bash bootstrap_revo3.sh                    # default: auto-detect 126/127
+#   bash bootstrap_revo3.sh                    # default: auto-detect connected hands
 #   bash bootstrap_revo3.sh --manual           # interactive: discover + type ports
 #   bash bootstrap_revo3.sh /dev/ttyACM6 l /dev/ttyACM1 r
 
@@ -15,7 +15,7 @@ source "${SCRIPT_DIR}/role_mapping_utils.sh"
 usage() {
   cat <<EOF
 Usage:
-  bash bootstrap_revo3.sh                    Auto-detect slave 126/127 (default)
+  bash bootstrap_revo3.sh                    Auto-detect connected hands (default)
   bash bootstrap_revo3.sh --auto             Same as default (compat)
   bash bootstrap_revo3.sh --manual           Interactive: discover + enter ports
   bash bootstrap_revo3.sh <dev> <l|r> <dev> <l|r>
@@ -30,13 +30,20 @@ EOF
 }
 
 auto_detect_ports() {
-  echo "[1/4] Auto-detect Revo3 on serial (slave 126=left, 127=right)..."
+  echo "[1/4] Auto-detect connected Revo3 hands on serial (slave 126=left, 127=right)..."
   # Some drivers (e.g. ch343) require world-readable permissions beyond dialout group
   apply_serial_permissions
   local output left_port right_port
   if ! output="$(bash "${SCRIPT_DIR}/detect_revo3_ports_auto.sh" 2>&1)"; then
     echo "${output}" >&2
-    echo "[ERROR] auto-detect failed. Plug in both hands, or use: bash bootstrap_revo3.sh --manual" >&2
+    echo >&2
+    bash "${SCRIPT_DIR}/discover_revo3_serial.sh" >&2 || true
+    echo >&2
+    echo "[INFO] If discovery shows no /dev/ttyUSB*, /dev/ttyACM*, or /dev/ttyCH343* devices:" >&2
+    echo "       1. Verify both Revo3 USB/RS485 adapters are plugged in and powered." >&2
+    echo "       2. Check kernel USB logs: sudo dmesg -T | tail -n 80" >&2
+    echo "       3. Check whether the CH34x/CH343 driver is loaded: lsmod | grep -E 'ch34|usbserial'" >&2
+    echo "[ERROR] auto-detect failed. Plug in at least one hand, or use: bash bootstrap_revo3.sh --manual" >&2
     return 1
   fi
   echo "${output}"
@@ -44,13 +51,20 @@ auto_detect_ports() {
   left_port="$(echo "${output}" | sed -n 's/^REVO3_LEFT_PORT=//p' | head -n1)"
   right_port="$(echo "${output}" | sed -n 's/^REVO3_RIGHT_PORT=//p' | head -n1)"
 
-  if [[ -z "${left_port}" || -z "${right_port}" ]]; then
-    echo "[ERROR] could not parse REVO3_LEFT_PORT / REVO3_RIGHT_PORT from detector." >&2
+  if [[ -z "${left_port}" && -z "${right_port}" ]]; then
+    echo "[ERROR] could not parse any REVO3_LEFT_PORT / REVO3_RIGHT_PORT from detector." >&2
     return 1
   fi
 
   echo "[2/4] Installing udev rules from auto-detect..."
-  install_udev_from_tokens "${left_port}" l "${right_port}" r
+  local -a tokens=()
+  if [[ -n "${left_port}" ]]; then
+    tokens+=("${left_port}" l)
+  fi
+  if [[ -n "${right_port}" ]]; then
+    tokens+=("${right_port}" r)
+  fi
+  install_udev_from_tokens "${tokens[@]}"
 }
 
 interactive_bootstrap() {
@@ -75,8 +89,8 @@ apply_serial_permissions() {
   for dev in /dev/revo3_hand_left /dev/revo3_hand_right; do
     sudo chmod a+rw "$dev" 2>/dev/null || true
   done
-  # All hardware serial ports (ttyUSB*, ttyACM*, ttyCH343USB*, ttyS*, etc.)
-  for dev in /dev/tty[A-Z]*; do
+  # USB serial ports used by Revo3 RS485 adapters.
+  for dev in /dev/ttyUSB* /dev/ttyACM* /dev/ttyCH*; do
     sudo chmod a+rw "$dev" 2>/dev/null || true
   done
   shopt -u nullglob
@@ -113,17 +127,36 @@ finish_bootstrap() {
   sleep 3
   echo "[*] Serial permissions..."
   apply_serial_permissions
+  echo "[*] Updating protocol configs..."
+  update_protocol_config_ports
   echo "[4/4] Health check..."
   bash "${SCRIPT_DIR}/check_revo3_setup.sh"
   echo
-  echo "[DONE] protocol_modbus_left/right.yaml should use:"
+  echo "[DONE] protocol_modbus_left/right.yaml use:"
   echo "  port: /dev/revo3_hand_left  (slave_id 126)"
   echo "  port: /dev/revo3_hand_right (slave_id 127)"
   echo ""
-  echo "Tip: edit config/protocol_modbus_left.yaml  → port: /dev/revo3_hand_left"
-  echo "     edit config/protocol_modbus_right.yaml → port: /dev/revo3_hand_right"
-  echo ""
   echo "Launch: ros2 launch revo3_driver dual_revo3_system.launch.py"
+}
+
+set_protocol_config_port() {
+  local cfg="$1"
+  local port="$2"
+
+  if [[ ! -f "${cfg}" ]]; then
+    echo "[WARN] config not found: ${cfg}" >&2
+    return 0
+  fi
+
+  sed -i -E "s#^([[:space:]]*port:).*#\\1 ${port}#" "${cfg}"
+}
+
+update_protocol_config_ports() {
+  local pkg_root
+  pkg_root="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+  set_protocol_config_port "${pkg_root}/config/protocol_modbus_left.yaml" "/dev/revo3_hand_left"
+  set_protocol_config_port "${pkg_root}/config/protocol_modbus_right.yaml" "/dev/revo3_hand_right"
 }
 
 main() {
